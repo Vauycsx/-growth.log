@@ -3969,46 +3969,63 @@ function renderFriends(){
 }
 
 
+function withTimeout(promise, ms, fallbackValue){
+  let timer;
+  const timeout = new Promise((resolve)=>{ timer = setTimeout(()=>resolve(fallbackValue), ms); });
+  return Promise.race([promise, timeout]).finally(()=>clearTimeout(timer));
+}
+
 async function init(){
-  await loadState();
-  applyTheme(state.profile?.theme || 'dark');
-  checkAchievements();
-  setInterval(tickTimer, 1000);
-  setInterval(()=>{
-    if((activeTab==='friends'||activeTab==='quests') && sb && sbSession){
-      loadFriendsData().then(()=>{ if(activeTab==='friends'||activeTab==='quests') render(); });
-    }
-  }, 8000);
-  document.getElementById('loadingScreen').style.display='none';
-
-  if(!sb){
-    // Supabase unavailable — fail open rather than permanently lock the app out
-    document.getElementById('app').style.display='block';
-    render();
-    return;
-  }
-
   try{
-    const {data} = await sb.auth.getSession();
-    sbSession = data.session || null;
-  }catch(e){ console.error('supabase getSession failed', e); sbSession = null; }
+    await loadState();
+    applyTheme(state.profile?.theme || 'dark');
+    checkAchievements();
+    setInterval(tickTimer, 1000);
+    setInterval(()=>{
+      if((activeTab==='friends'||activeTab==='quests') && sb && sbSession){
+        loadFriendsData().then(()=>{ if(activeTab==='friends'||activeTab==='quests') render(); });
+      }
+    }, 8000);
 
-  if(sbSession){
-    await refreshOwnProfile();
-    document.getElementById('app').style.display='block';
-    render();
-    await afterAuthChanged();
-  } else {
-    renderGateForm();
-    document.getElementById('authGate').style.display='flex';
-    startGateBgAnim();
+    if(!sb){
+      // Supabase unavailable — fail open rather than permanently lock the app out
+      document.getElementById('app').style.display='block';
+      render();
+      return;
+    }
+
+    try{
+      const {data} = await withTimeout(sb.auth.getSession(), 8000, {data:{session:null}});
+      sbSession = data.session || null;
+    }catch(e){ console.error('supabase getSession failed', e); sbSession = null; }
+
+    if(sbSession){
+      try{ await withTimeout(refreshOwnProfile(), 8000, null); }catch(e){ console.error('refreshOwnProfile failed', e); }
+      document.getElementById('app').style.display='block';
+      render();
+      afterAuthChanged().catch(e=>console.error('afterAuthChanged failed', e));
+    } else {
+      renderGateForm();
+      document.getElementById('authGate').style.display='flex';
+      startGateBgAnim();
+    }
+
+    sb.auth.onAuthStateChange((_event, session)=>{
+      const wasLoggedIn = !!sbSession;
+      sbSession = session;
+      if(!session && wasLoggedIn) exitToGate();
+    });
+  }catch(e){
+    // Last-resort safety net: never leave the page stuck on the loading screen.
+    console.error('init failed, opening in local mode', e);
+    const app = document.getElementById('app');
+    const gate = document.getElementById('authGate');
+    if(gate) gate.style.display='none';
+    if(app){ app.style.display='block'; try{ render(); }catch(e2){ console.error('render failed', e2); } }
+  }finally{
+    const ls = document.getElementById('loadingScreen');
+    if(ls) ls.style.display='none';
   }
-
-  sb.auth.onAuthStateChange((_event, session)=>{
-    const wasLoggedIn = !!sbSession;
-    sbSession = session;
-    if(!session && wasLoggedIn) exitToGate();
-  });
 }
 init();
 
